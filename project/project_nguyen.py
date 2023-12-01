@@ -10,6 +10,7 @@ import soundfile as sf
 import librosa
 import librosa.display
 import os
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense,Dropout,Flatten,Conv2D,Input,MaxPooling2D
 from tensorflow.keras.optimizers import Adam
@@ -25,6 +26,18 @@ hop_length = int(0.5 * win_size) # hop_length => 50% overlap
 n_mels = 192 # number of Mel bin - as number of features
 num_sample_with_hop = max_sample_size * hop_length
 window=hamming(win_size)
+
+train_data_dir = "data/train_data"
+test_data_dir = "data/test_data"
+labels = ["cars", "trams"]
+train_car_audio_list = os.listdir(os.path.join(train_data_dir, labels[0]))
+train_car_audio_list.sort()
+train_tram_audio_list = os.listdir(os.path.join(train_data_dir, labels[1]))
+train_tram_audio_list.sort()
+test_car_audio_list = os.listdir(os.path.join(test_data_dir, labels[0]))
+test_car_audio_list.sort()
+test_tram_audio_list = os.listdir(os.path.join(test_data_dir, labels[1]))
+test_tram_audio_list.sort()
 
 def get_mel_feature(audio_file):
     sample, _ = librosa.load(audio_file, sr=sample_rate)
@@ -46,18 +59,6 @@ def get_mel_feature(audio_file):
     S_DB = (S_DB - min_db) / (max_db - min_db)
 
     return S_DB
-
-train_data_dir = "data/train_data"
-test_data_dir = "data/test_data"
-labels = ["cars", "trams"]
-train_car_audio_list = os.listdir(os.path.join(train_data_dir, labels[0]))
-train_car_audio_list.sort()
-train_tram_audio_list = os.listdir(os.path.join(train_data_dir, labels[1]))
-train_tram_audio_list.sort()
-test_car_audio_list = os.listdir(os.path.join(test_data_dir, labels[0]))
-test_car_audio_list.sort()
-test_tram_audio_list = os.listdir(os.path.join(test_data_dir, labels[1]))
-test_tram_audio_list.sort()
 
 # Load data from directory
 # load_mode: 1-load all, 2-train only, 3-test_only, 4-specific test sample index
@@ -81,6 +82,7 @@ def load_data(load_mode=4,load_sample=5):
                 feature = np.expand_dims(np.expand_dims(feature, axis=0), axis=-1)
                 X_train = np.append(X_train, feature, axis=0)
                 y_train = np.append(y_train, np.array([[1]]), axis=0)
+        X_train, y_train = shuffle(X_train, y_train, random_state=1112)
 
     # LOAD TEST DATA
     if (load_mode == 1 or load_mode == 3 or load_mode == 4):
@@ -112,6 +114,7 @@ def load_data(load_mode=4,load_sample=5):
             feature = np.expand_dims(np.expand_dims(feature, axis=0), axis=-1)
             X_test = np.append(X_test, feature, axis=0)
             y_test = np.append(y_test, np.array([[1]]), axis=0)
+    
     return X_train, y_train, X_test, y_test
 
 def visualize_sound_features(car_audio_path=None, tram_audio_path=None):
@@ -207,7 +210,103 @@ def visualize_sound_features(car_audio_path=None, tram_audio_path=None):
     plt.colorbar(im_tram, ax=ax[1][2], format='%+2.0f dB');
     plt.show()
 
-visualize_sound_features(test_car_audio_list[5], test_tram_audio_list[5])
+def define_model(input_shape=(192,192,1), opt=Adam()):
+    model_cnn = Sequential()
+    model_cnn.add(Input(input_shape))
+    model_cnn.add(Conv2D(16, kernel_size=(3,3), activation='relu', padding='same'))
+    model_cnn.add(Conv2D(16, kernel_size=(3,3), activation='relu', padding='same'))
+    model_cnn.add(MaxPooling2D((2, 2)))
+    model_cnn.add(Conv2D(32, kernel_size=(3,3), activation='relu', padding='same'))
+    model_cnn.add(Conv2D(32, kernel_size=(3,3), activation='relu', padding='same'))
+    model_cnn.add(MaxPooling2D((2, 2)))
+    model_cnn.add(Conv2D(64, kernel_size=(3,3), activation='relu', padding='same'))
+    model_cnn.add(Conv2D(64, kernel_size=(3,3), activation='relu', padding='same'))
+    model_cnn.add(MaxPooling2D((2, 2)))
+    model_cnn.add(Flatten())
+    model_cnn.add(Dense(32, activation="relu"))
+    model_cnn.add(Dropout(0.1))
+    model_cnn.add(Dense(16, activation="relu"))
+    model_cnn.add(Dropout(0.1))
+    model_cnn.add(Dense(1, activation="sigmoid"))
+    model_cnn.compile(optimizer=opt,loss="binary_crossentropy",metrics=['accuracy'])
+    model_cnn.summary()
+    return model_cnn
+
+def save_model(model_cnn, path):
+    model_cnn.save(path)
+
+def load_model(path):
+    model_cnn = tf.keras.models.load_model(path)
+    return model_cnn
+
+def train_model(model_cnn, X_train, y_train):
+    batch_size = 16
+    callback = EarlyStopping(monitor='val_loss', patience=5)
+    epochs = 10
+    history = model_cnn.fit(X_train, y_train, epochs=epochs, 
+                        batch_size=batch_size, 
+                        # validation_data=(X_val, y_val),
+                        validation_split=0.1,
+                        callbacks=[callback])
+    return history
+
+def plot_history(history):
+    fig, ax = plt.subplots(1,2,figsize=(16, 5))
+    ax[0].plot(history.history['accuracy'])
+    ax[0].plot(history.history['val_accuracy'])
+    ax[0].set_title('Model accuracy')
+    ax[0].set_ylabel('Accuracy %')
+    ax[0].set_xlabel('Epoch')
+    ax[0].legend(['Train', 'Val'], loc='upper left')
+    ax[1].plot(history.history['loss'])
+    ax[1].plot(history.history['val_loss'])
+    ax[1].set_title('Model loss')
+    ax[1].set_ylabel('Loss')
+    ax[1].set_xlabel('Epoch')
+    ax[1].legend(['Train', 'Val'], loc='upper left')
+    plt.show()
+
+if __name__ == "__main__":
+    # LOAD DATA
+    X_train, y_train, X_test, y_test = load_data(load_mode=1)
+    # _, _, X_test, y_test = load_data(load_mode=4, load_sample=5)
+
+    # TRAINING
+    # Init model
+    model_cnn = define_model(input_shape=(192,192,1), opt=Adam(0.0001))
+
+    # Fit model with training data
+    history = train_model(model_cnn, X_train, y_train)
+
+    # Plot training history
+    plot_history(history)
+
+    # Evaluation
+    train_losses, train_acc = model_cnn.evaluate(X_train, y_train)
+    test_losses, test_acc = model_cnn.evaluate(X_test, y_test)
+    print("Training: Accuracy ", round(train_acc*100.0,2), " - Losses ", round(train_losses,2))
+    print("Testing : Accuracy ", round(test_acc*100.0,2) , " - Losses ", round(test_losses,2))
+
+    # # Save model
+    # save_model(model_cnn, path="cars_trams_model_ver2.keras")
+
+    # TESTING ON SAMPLES
+    # Visualize data
+    # load_sample=5
+    # visualize_sound_features(car_audio_path=test_car_audio_list[load_sample],
+    #                          tram_audio_path=test_tram_audio_list[load_sample])
+    
+    # # Load model
+    # model_cnn = load_model(path="cars_trams_model.keras")
+    
+    # # Test model
+    # y_test_pred = model_cnn.predict(X_test)
+    # y_test_pred[y_test_pred>0.5] = 1
+    # y_test_pred[y_test_pred<=0.5] = 0
+    # test_labels = [labels[int(y_test[0])], labels[int(y_test[1])]]
+    # pred_labels = [labels[int(y_test_pred[0])], labels[int(y_test_pred[1])]]
+    # print("Groundtruth|    ", test_labels[0], "    ", test_labels[1])
+    # print("Prediction |    ", pred_labels[0], "    ", pred_labels[1])
 
 
 
